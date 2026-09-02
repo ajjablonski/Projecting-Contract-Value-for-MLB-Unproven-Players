@@ -1,0 +1,546 @@
+# Projecting-Contract-Value-for-MLB-Unproven-Players
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(ggplot2)
+library(fmsb)
+library(DT)
+library(baseballr)
+library(plotly)
+library(readxl)
+library(tibble)
+
+current_stats <- read_excel("~/MSDS/current_stats.xlsx")
+ByTheMetrics <- read_excel("~/MSDS/ByTheMetrics.xlsx")
+Valuable_Data <- read_excel("~/MSDS/Valuable_Data.xlsx")
+
+# =========================================================================
+# 1. TEAM REFERENCE TABLE (used by the Roster Needs tab's team dropdown)
+# =========================================================================
+mlb_teams <- data.frame(
+  team_name = c("Arizona Diamondbacks", "Athletics", "Atlanta Braves",
+                "Baltimore Orioles", "Boston Red Sox", "Chicago Cubs",
+                "Chicago White Sox", "Cincinnati Reds", "Cleveland Guardians",
+                "Colorado Rockies", "Detroit Tigers", "Houston Astros",
+                "Kansas City Royals", "Los Angeles Angels", "Los Angeles Dodgers",
+                "Miami Marlins", "Milwaukee Brewers", "Minnesota Twins",
+                "New York Mets", "New York Yankees", "Philadelphia Phillies",
+                "Pittsburgh Pirates", "San Diego Padres", "San Francisco Giants",
+                "Seattle Mariners", "St. Louis Cardinals", "Tampa Bay Rays",
+                "Texas Rangers", "Toronto Blue Jays", "Washington Nationals"),
+  team_id = c(109, 133, 144, 110, 111, 112, 145, 113, 114, 115, 116, 117,
+              118, 108, 119, 146, 158, 142, 121, 147, 143, 134, 135, 137,
+              136, 138, 139, 140, 141, 120),
+  stringsAsFactors = FALSE
+)
+
+# =========================================================================
+# 2. PLAYER DIRECTORY (built from MSDS/Valuable_Data.xlsx)
+#    Used by tab 2 (5-Tool Player Targeter / financial valuation)
+# =========================================================================
+scouting_cols <- c("Player", "Position", "Type", "Team_ID", "team_name",
+                   "Level", "Hit", "Power", "Run", "Arm", "Field",
+                   "Proj_WAR", "Current_Salary", "Contract_Status",
+                   "Market_Value", "Surplus_Value")
+
+full_pool <- Valuable_Data %>%
+  filter(!is.na(Player)) %>%
+  mutate(
+    Player = trimws(Player),
+    Position = trimws(Position),
+    Type = "Hitter",
+    # Prospects (no MLB service time yet) are flagged "Minor League Control"
+    # and have no fWAR/salary/surplus on record; everyone else is MLB.
+    Level = ifelse(`Contract Status` == "Minor League Control", "MiLB", "MLB"),
+    Proj_WAR = coalesce(fWAR, 0),
+    Current_Salary = coalesce(`Current Salary`, 0),
+    # A couple of rows use an en-dash ("-") instead of a blank cell here,
+    # which forces the whole column to read in as text -- suppressWarnings
+    # because that placeholder deliberately becomes NA on coercion.
+    Surplus_Value = coalesce(suppressWarnings(as.numeric(`Surplus $M`)), 0) * 1e6,
+    Market_Value = Current_Salary + Surplus_Value
+  ) %>%
+  left_join(mlb_teams, by = c("Team" = "team_name")) %>%
+  rename(team_name = Team, Contract_Status = `Contract Status`) %>%
+  select(Player, Position, Type, Team_ID = team_id, team_name, Level,
+         Hit = `Hit Grade`, Power = `Power Grade`, Run = `Run Grade`,
+         Arm = `Arm Grade`, Field = `Field Grade`, Proj_WAR,
+         Current_Salary, Contract_Status, Market_Value, Surplus_Value)
+
+ui_team_choices <- if (nrow(full_pool) > 0) sort(unique(full_pool$team_name)) else character(0)
+
+# Level choices ordered MLB -> AAA -> AA -> A+ -> A -> ROK -> anything else,
+# so the dropdown reads top-down like an org chart instead of alphabetically.
+level_order <- c("MLB", "AAA", "AA", "A+", "A", "ROK", "MiLB")
+ui_level_choices <- if (nrow(full_pool) > 0) {
+  present <- unique(full_pool$Level)
+  c("All Levels", present[order(match(present, level_order), present)])
+} else {
+  c("All Levels")
+}
+
+# =========================================================================
+# 3. HITTER METRICS DATA (metrics_app.R) -- current season + projections
+# =========================================================================
+metric_choices <- c("BB%", "K%", "ISO", "BABIP", "AVG", "OBP", "SLG",
+                    "wOBA","xwOBA","wRC+","WAR","Contact%","EV","HardHit%",
+                    "Barrel%","GB%","SwStr%","Whiff%","xSLG")
+
+empty_metrics_df <- function() {
+  tibble::tibble(Name = character(), Level = character(), Type = character()) %>%
+    bind_cols(
+      as.data.frame(matrix(numeric(), nrow = 0, ncol = length(metric_choices),
+                           dimnames = list(NULL, metric_choices)))
+    )
+}
+
+
+current_df <- current_stats %>%
+  mutate(Type = "Current") %>%
+  select(any_of(c("Name", "Level", "Type", metric_choices)))
+
+projections_df <- ByTheMetrics %>%
+  mutate(Type = "Projected") %>%
+  select(any_of(c("Name", "Level", "Type", metric_choices)))
+
+# =========================================================================
+# UI
+# =========================================================================
+ui <- dashboardPage(
+  skin = "blue",
+  dashboardHeader(title = "MLB Front Office Engine"),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Roster Needs Analysis", tabName = "roster_needs", icon = icon("users")),
+      menuItem("5-Tool Player Targeter", tabName = "player_comp", icon = icon("chart-pie")),
+      menuItem("Hitter Metrics Comparison", tabName = "hitter_metrics", icon = icon("chart-line"))
+    )
+  ),
+  dashboardBody(
+    tabItems(
+      
+      # ------------------------------------------------------------------
+      # TAB 1: ROSTER NEEDS
+      # ------------------------------------------------------------------
+      tabItem(tabName = "roster_needs",
+              fluidRow(
+                box(
+                  title = "Select Organization", width = 4, status = "primary", solidHeader = TRUE,
+                  selectInput("team_select", "Choose MLB Team:",
+                              choices = setNames(mlb_teams$team_id, mlb_teams$team_name)),
+                  actionButton("load_roster", "Fetch & Analyze Roster", class = "btn-success", icon = icon("sync"))
+                ),
+                box(
+                  title = "Organizational Depth Summary", width = 8, status = "info", solidHeader = TRUE,
+                  plotOutput("needs_plot", height = "250px")
+                )
+              ),
+              fluidRow(
+                box(
+                  title = "Identified Roster Shortages & Deficiencies", width = 6, status = "danger", solidHeader = TRUE,
+                  tableOutput("needs_table")
+                ),
+                box(
+                  title = "Active 40-Man Roster Breakdown", width = 6, status = "primary", solidHeader = TRUE,
+                  dataTableOutput("roster_table")
+                )
+              )
+      ),
+      
+      # ------------------------------------------------------------------
+      # TAB 2: PLAYER TARGETER & FINANCIAL VALUATION
+      # ------------------------------------------------------------------
+      tabItem(tabName = "player_comp",
+              fluidRow(
+                box(
+                  title = "Source Player A (Base)", width = 6, status = "primary", solidHeader = TRUE,
+                  selectInput("team_a", "Filter by Organization:", choices = ui_team_choices,
+                              selected = if ("New York Yankees" %in% ui_team_choices) "New York Yankees" else NULL),
+                  selectInput("level_a", "Filter by Level:", choices = ui_level_choices, selected = "All Levels"),
+                  selectInput("player1", "Select Player A:", choices = NULL)
+                ),
+                box(
+                  title = "Source Player B (Target/Prospect)", width = 6, status = "danger", solidHeader = TRUE,
+                  selectInput("team_b", "Filter by Organization:", choices = ui_team_choices,
+                              selected = if ("Baltimore Orioles" %in% ui_team_choices) "Baltimore Orioles" else NULL),
+                  selectInput("level_b", "Filter by Level:", choices = ui_level_choices, selected = "All Levels"),
+                  selectInput("player2", "Select Player B:", choices = NULL)
+                )
+              ),
+              fluidRow(
+                box(
+                  title = "5-Tool Scouting Profile Overlay (20-80 Scale)", width = 12, status = "info", solidHeader = TRUE,
+                  plotOutput("radar_plot", height = "320px")
+                )
+              ),
+              fluidRow(
+                valueBoxOutput("p1_surplus_box", width = 6),
+                valueBoxOutput("p2_surplus_box", width = 6)
+              ),
+              fluidRow(
+                box(
+                  title = "Comprehensive Valuation & Financial Roster Matrix", width = 12, status = "success", solidHeader = TRUE,
+                  tableOutput("valuation_table")
+                )
+              ),
+              fluidRow(
+                box(
+                  title = "Top 10 Closest Player Match Profiles to Player A",
+                  status = "success", solidHeader = TRUE, width = 12,
+                  p(em("Calculated dynamically using continuous Euclidean distance across Hit, Power, Run, Arm, and Field tools.")),
+                  DTOutput("top_matches_table")
+                )
+              )
+      ),
+      
+      # ------------------------------------------------------------------
+      # TAB 3: HITTER METRICS COMPARISON (from metrics_app.R)
+      # ------------------------------------------------------------------
+      tabItem(tabName = "hitter_metrics",
+              fluidRow(
+                box(
+                  title = "Comparison Controls", width = 4, status = "primary", solidHeader = TRUE,
+                  radioButtons(
+                    "data_mode", label = "Show:",
+                    choices = c("Current Stats" = "Current", "Projections" = "Projected"),
+                    selected = "Current"
+                  ),
+                  selectInput("xvar", label = "Select X-Axis:", choices = metric_choices,
+                              selected = metric_choices[1]),
+                  selectInput("yvar", label = "Select Y-Axis:", choices = metric_choices,
+                              selected = metric_choices[2]),
+                  selectizeInput(
+                    "player_search", label = "Search for Player 1:",
+                    choices = c("Type a name..." = "", sort(unique(c(current_df$Name, projections_df$Name)))),
+                    selected = "",
+                    options = list(placeholder = "Type a name...", maxOptions = 10)
+                  ),
+                  selectizeInput(
+                    "player_search2", label = "Search for Player 2:",
+                    choices = c("Type a name..." = "", sort(unique(c(current_df$Name, projections_df$Name)))),
+                    selected = "",
+                    options = list(placeholder = "Type a name...", maxOptions = 10)
+                  )
+                ),
+                box(
+                  title = "Metric Scatter", width = 8, status = "info", solidHeader = TRUE,
+                  plotlyOutput("graph")
+                )
+              )
+      )
+    )
+  )
+)
+
+# =========================================================================
+# SERVER
+# =========================================================================
+server <- function(input, output, session) {
+  
+  # =======================================================================
+  # TAB 1: ROSTER NEEDS ENGINE
+  # =======================================================================
+  roster_data <- eventReactive(input$load_roster, {
+    req(input$team_select)
+    
+    # Wrap the ENTIRE fetch-and-shape step in tryCatch, not just the API
+    # call. roster_type = '40Man' isn't guaranteed to return the same
+    # column names as 'active' does, so a schema mismatch in select()
+    # was throwing an uncaught error before -- now it's caught and shown
+    # as a readable message instead of crashing the app.
+    tryCatch({
+      raw_roster <- mlb_rosters(team_id = as.numeric(input$team_select), season = 2026, roster_type = "40Man")
+      
+      validate(need(!is.null(raw_roster) && nrow(raw_roster) > 0,
+                    "The MLB API returned no roster rows for this team/season."))
+      
+      name_col <- intersect(c("person_full_name", "full_name", "name"), names(raw_roster))[1]
+      pos_col  <- intersect(c("position_abbreviation", "position_code", "primary_position_abbreviation"), names(raw_roster))[1]
+      type_col <- intersect(c("position_type", "primary_position_type"), names(raw_roster))[1]
+      
+      validate(need(!is.na(name_col) && !is.na(pos_col),
+                    paste0(
+                      "The MLB API returned a different roster shape than expected. ",
+                      "Columns returned: ", paste(names(raw_roster), collapse = ", ")
+                    )))
+      
+      raw_roster %>%
+        transmute(
+          Player = .data[[name_col]],
+          Position = .data[[pos_col]],
+          Type = if (!is.na(type_col)) .data[[type_col]] else NA_character_
+        )
+    }, error = function(e) {
+      validate(paste("Couldn't fetch roster data:", conditionMessage(e)[1]))
+    })
+  }, ignoreNULL = FALSE)
+  
+  roster_summary <- reactive({
+    df <- roster_data()
+    
+    ideal_benchmarks <- data.frame(
+      Position = c("P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"),
+      Ideal = c(18, 3, 2, 2, 2, 2, 2, 2, 2, 1)
+    )
+    
+    actual_counts <- df %>%
+      group_by(Position) %>%
+      summarise(Actual = n(), .groups = "drop")
+    
+    ideal_benchmarks %>%
+      left_join(actual_counts, by = "Position") %>%
+      mutate(Actual = ifelse(is.na(Actual), 0, Actual),
+             Difference = Actual - Ideal)
+  })
+  
+  # Single, consolidated variance plot (the original script defined this
+  # output twice, so only the second version ever rendered -- merged here
+  # into one plot that shows the full position-by-position picture, with
+  # deficits and surpluses colored separately).
+  output$needs_plot <- renderPlot({
+    df <- tryCatch(roster_summary(), error = function(e) {
+      validate(paste("Error building roster summary:", conditionMessage(e)[1]))
+    })
+    validate(need(nrow(df) > 0, "Fetch a roster to see the depth summary."))
+    
+    tryCatch({
+      ggplot(df, aes(x = Position, y = Difference,
+                     fill = ifelse(Difference < 0, "Below", "Above"))) +
+        geom_col() +
+        geom_hline(yintercept = 0, color = "grey40", linewidth = 0.4) +
+        scale_fill_manual(
+          values = c(Above = "steelblue", Below = "firebrick"),
+          breaks = c("Above", "Below"),
+          labels = c("Above Target (Surplus)", "Below Target (Deficit)"),
+          name = "Status"
+        ) +
+        labs(y = "Variance from Standard Allocation", x = "Position Group") +
+        theme_minimal()
+    }, error = function(e) {
+      validate(paste("Error rendering chart:", conditionMessage(e)[1]))
+    })
+  })
+  
+  output$needs_table <- renderTable({
+    roster_summary() %>%
+      filter(Difference < 0) %>%
+      select(Position, `Ideal Target` = Ideal, `Current Active` = Actual, `Shortage Gap` = Difference)
+  })
+  
+  output$roster_table <- renderDataTable({
+    roster_data()
+  }, options = list(pageLength = 10))
+  
+  # =======================================================================
+  # TAB 2: PLAYER COMP & SURPLUS MATRIX
+  # =======================================================================
+  observeEvent(list(input$team_a, input$level_a), {
+    pool_a <- full_pool %>% filter(team_name == input$team_a)
+    if (!is.null(input$level_a) && input$level_a != "All Levels") {
+      pool_a <- pool_a %>% filter(Level == input$level_a)
+    }
+    pool_a <- pool_a %>% arrange(Player)
+    choices_a <- if (nrow(pool_a) > 0) {
+      setNames(pool_a$Player, paste0(pool_a$Player, " (", pool_a$Level, ")"))
+    } else {
+      character(0)
+    }
+    updateSelectInput(session, "player1", choices = choices_a,
+                      selected = if (length(choices_a) > 0) choices_a[1] else character(0))
+  }, ignoreNULL = FALSE)
+  
+  observeEvent(list(input$team_b, input$level_b), {
+    pool_b <- full_pool %>% filter(team_name == input$team_b)
+    if (!is.null(input$level_b) && input$level_b != "All Levels") {
+      pool_b <- pool_b %>% filter(Level == input$level_b)
+    }
+    pool_b <- pool_b %>% arrange(Player)
+    choices_b <- if (nrow(pool_b) > 0) {
+      setNames(pool_b$Player, paste0(pool_b$Player, " (", pool_b$Level, ")"))
+    } else {
+      character(0)
+    }
+    updateSelectInput(session, "player2", choices = choices_b,
+                      selected = if (length(choices_b) > 0) choices_b[1] else character(0))
+  }, ignoreNULL = FALSE)
+  
+  p1_data <- reactive({
+    req(input$player1)
+    full_pool %>% filter(Player == input$player1, team_name == input$team_a) %>% slice(1)
+  })
+  
+  p2_data <- reactive({
+    req(input$player2)
+    full_pool %>% filter(Player == input$player2, team_name == input$team_b) %>% slice(1)
+  })
+  
+  output$radar_plot <- renderPlot({
+    d1 <- p1_data(); d2 <- p2_data()
+    validate(need(nrow(d1) > 0 && nrow(d2) > 0, "Select a player on each side to compare."))
+    
+    # NOTE: dplyr::select() returns a tibble, and tibbles row-bind by
+    # matching column names -- an unnamed vector like rep(80, 5) has no
+    # names to align against Hit/Power/Run/Arm/Field, which silently
+    # scrambles (or errors on) the resulting frame. Coercing to plain
+    # numeric vectors first sidesteps that entirely.
+    tool_cols <- c("Hit", "Power", "Run", "Arm", "Field")
+    p1_tools <- as.numeric(as.data.frame(d1)[1, tool_cols])
+    p2_tools <- as.numeric(as.data.frame(d2)[1, tool_cols])
+    
+    validate(need(!anyNA(p1_tools) && !anyNA(p2_tools),
+                  "One or both players are missing Hit/Power/Run/Arm/Field grades in the data."))
+    
+    radar_df <- as.data.frame(rbind(rep(80, 5), rep(20, 5), p1_tools, p2_tools))
+    names(radar_df) <- tool_cols
+    rownames(radar_df) <- c("Max", "Min", input$player1, input$player2)
+    
+    colors_border <- c("#1f4e79", "#d9534f")
+    colors_in     <- c(rgb(0.12, 0.31, 0.47, 0.25), rgb(0.85, 0.33, 0.31, 0.25))
+    
+    radarchart(radar_df, axistype = 1, pcol = colors_border, pfcol = colors_in, plwd = 4,
+               plty = 1, cglcol = "grey70", cglty = 2, axislabcol = "grey40",
+               caxislabels = seq(20, 80, 15), cglwd = 0.8, vlcex = 1.2)
+    
+    legend(x = "topright", legend = c(input$player1, input$player2), bty = "n",
+           pch = 20, col = colors_border, text.col = "black", cex = 1.2, pt.cex = 2.5)
+  })
+  
+  output$p1_surplus_box <- renderValueBox({
+    dat <- p1_data()
+    req(nrow(dat) > 0)
+    color <- ifelse(dat$Surplus_Value >= 0, "green", "red")
+    valueBox(
+      formatC(dat$Surplus_Value, format = "d", big.mark = ","),
+      subtitle = paste(dat$Player, "Net Surplus Value ($) | Status:", dat$Contract_Status),
+      icon = icon("money-bill-wave"), color = color
+    )
+  })
+  
+  output$p2_surplus_box <- renderValueBox({
+    dat <- p2_data()
+    req(nrow(dat) > 0)
+    color <- ifelse(dat$Surplus_Value >= 0, "green", "red")
+    valueBox(
+      formatC(dat$Surplus_Value, format = "d", big.mark = ","),
+      subtitle = paste(dat$Player, "Net Surplus Value ($) | Status:", dat$Contract_Status),
+      icon = icon("money-bill-wave"), color = color
+    )
+  })
+  
+  output$valuation_table <- renderTable({
+    d1 <- p1_data(); d2 <- p2_data()
+    validate(need(nrow(d1) > 0 && nrow(d2) > 0, "Select a player on each side to compare."))
+    
+    bind_rows(d1, d2) %>%
+      select(
+        Player, Team = team_name, Level, Position,
+        `WAR` = Proj_WAR,
+        `Salary ($)` = Current_Salary,
+        `Surplus Value ($)` = Surplus_Value,
+        `Contract Control` = Contract_Status
+      )
+  }, digits = 1, big.mark = ",")
+  
+  # Top-10 closest matches to Player A across the whole player pool.
+  # (Original code referenced a nonexistent input$SelectPlayerA and an
+  #  undefined `player_data` object; wired here to the real Player A
+  #  selection and the full_pool data source.)
+  output$top_matches_table <- renderDT({
+    req(input$player1)
+    
+    target_row <- full_pool %>% filter(Player == input$player1, team_name == input$team_a) %>% slice(1)
+    validate(need(nrow(target_row) > 0, "Select Player A to see comparable profiles."))
+    
+    target_stats <- target_row %>% select(Hit, Power, Run, Arm, Field) %>% as.numeric()
+    
+    comparison_pool <- full_pool %>%
+      filter(!(Player == input$player1 & team_name == input$team_a))
+    
+    distances <- apply(comparison_pool[, c("Hit", "Power", "Run", "Arm", "Field")], 1, function(row) {
+      sqrt(sum((as.numeric(row) - target_stats)^2))
+    })
+    
+    top_10 <- comparison_pool %>%
+      mutate(Profile_Distance = round(distances, 2)) %>%
+      arrange(Profile_Distance) %>%
+      select(Player, Team = team_name, Level, Position, Profile_Distance,
+             Hit, Power, Run, Arm, Field, `WAR` = Proj_WAR) %>%
+      head(10)
+    
+    datatable(
+      top_10,
+      options = list(pageLength = 10, dom = "t", order = list(list(4, "asc"))),
+      rownames = FALSE,
+      class = "cell-border stripe"
+    ) %>%
+      formatStyle("Profile_Distance", backgroundColor = "#eaffea", fontWeight = "bold")
+  })
+  
+  # =======================================================================
+  # TAB 3: HITTER METRICS COMPARISON
+  # =======================================================================
+  plot_data <- reactive({
+    if (input$data_mode == "Projected") projections_df else current_df
+  })
+  
+  make_text <- function(df) {
+    paste0(
+      "Player: ", df$Name, "\n",
+      "Level: ", df$Level, "\n",
+      input$data_mode, "\n",
+      input$xvar, ": ", df[[input$xvar]], "\n",
+      input$yvar, ": ", df[[input$yvar]]
+    )
+  }
+  
+  add_highlight <- function(p, S, player_name, fill_color) {
+    if (is.null(player_name) || player_name == "") return(p)
+    
+    highlight_row <- S %>% filter(Name == player_name)
+    if (nrow(highlight_row) == 0) return(p)
+    
+    p + geom_point(
+      data = highlight_row,
+      aes(x = .data[[input$xvar]], y = .data[[input$yvar]], text = make_text(highlight_row)),
+      color = "black", shape = 21, fill = fill_color, size = 4, stroke = 1.2
+    )
+  }
+  
+  output$graph <- renderPlotly({
+    req(input$xvar, input$yvar)
+    S <- plot_data()
+    
+    validate(
+      need(nrow(S) > 0,
+           "No data for this view yet -- if you're on 'Projections', make sure the exported FanGraphs files exist at the paths set near the top of the script.")
+    )
+    
+    p <- ggplot(
+      data = S,
+      aes(x = .data[[input$xvar]], y = .data[[input$yvar]], color = Level, text = make_text(S))
+    ) +
+      geom_point(alpha = 0.7) +
+      # Overall linear fit across all points (MLB + MiLB combined), drawn
+      # with its own aes/inherit.aes = FALSE so it doesn't get split into
+      # per-Level lines by the color mapping above.
+      geom_smooth(
+        data = S,
+        aes(x = .data[[input$xvar]], y = .data[[input$yvar]]),
+        method = "lm", formula = y ~ x, se = TRUE,
+        color = "grey30", fill = "grey70", linetype = "dashed",
+        linewidth = 0.9, alpha = 0.2, inherit.aes = FALSE
+      ) +
+      scale_color_manual(values = c("MLB" = "steelblue", "MiLB" = "darkorange")) +
+      theme_bw() +
+      labs(x = input$xvar, y = input$yvar, color = "Level",
+           title = paste(input$data_mode, "Metrics"),
+           caption = "Dashed line: overall linear fit (least squares), MLB + MiLB combined")
+    
+    p <- add_highlight(p, S, input$player_search,  "yellow")
+    p <- add_highlight(p, S, input$player_search2, "magenta")
+    
+    ggplotly(p, tooltip = "text")
+  })
+}
+
+shinyApp(ui = ui, server = server)
