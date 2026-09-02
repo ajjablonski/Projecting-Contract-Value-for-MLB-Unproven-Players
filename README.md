@@ -27,7 +27,7 @@ Interactive scatter plot comparing current-season stats vs. projections across a
 
 ## Background
 
-This tool was built to explore contract-extension timing for pre-arbitration players — comparing prospects like Samuel Basallo, Lazaro Montes, and Jesus Made against comparable historical extensions (e.g., Fernando Tatis Jr.'s pre-arb deal) to inform a sign/don't-sign decision framework based on scouting grades, statistical comparables, and surplus value.
+This tool was built to explore contract-extension timing for pre-arbitration players — comparing unproven players like Samuel Basallo, Lazaro Montes, and Jesus Made against comparable historical extensions (e.g., Fernando Tatis Jr.'s pre-arb deal) to inform a sign/don't-sign decision framework based on scouting grades, statistical comparables, and surplus value.
 
 ## Requirements
 
