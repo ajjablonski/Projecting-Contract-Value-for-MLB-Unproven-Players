@@ -3,10 +3,11 @@
 A Shiny dashboard that consolidates roster construction, prospect/player valuation, and hitter metrics comparison into a single front-office tool. Built around a "Moneyball"-style extension decision framework: use scouting grades, projected performance, and market value to decide whether a pre-arbitration player is worth locking up early.
 
 ## Live App
-[![Launch App](https://img.shields.io/badge/Shiny-Launch%20App-blue?style=for-the-badge&logo=rstudio)](https://yourname.shinyapps.io/mlb-front-office/)
+
+[![Launch App](https://img.shields.io/badge/Shiny-Launch%20App-blue?style=for-the-badge&logo=rstudio)](https://ajjablonski.shinyapps.io/mlb-front-office/)
 
 An interactive R Shiny dashboard for MLB roster and player analysis.
-**[Click here to open the app](https://yourname.shinyapps.io/mlb-front-office/)**. It runs in your browser with nothing to install.
+**[Click here to open the app](https://ajjablonski.shinyapps.io/mlb-front-office/)**. It runs in your browser with nothing to install.
 
 ## Overview
 
