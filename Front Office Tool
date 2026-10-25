@@ -10,9 +10,9 @@ library(plotly)
 library(readxl)
 library(tibble)
 
-current_stats <- read_excel("~/MSDS/current_stats.xlsx")
-ByTheMetrics <- read_excel("~/MSDS/ByTheMetrics.xlsx")
-Valuable_Data <- read_excel("~/MSDS/Valuable_Data.xlsx")
+current_stats <- read_excel("~/current_stats.xlsx")
+ByTheMetrics <- read_excel("~/ByTheMetrics.xlsx")
+Valuable_Data <- read_excel("~/Valuable_Data.xlsx")
 
 # =========================================================================
 # 1. TEAM REFERENCE TABLE (used by the Roster Needs tab's team dropdown)
