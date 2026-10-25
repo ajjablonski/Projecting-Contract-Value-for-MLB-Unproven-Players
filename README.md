@@ -2,6 +2,9 @@
 
 A Shiny dashboard that consolidates roster construction, prospect/player valuation, and hitter metrics comparison into a single front-office tool. Built around a "Moneyball"-style extension decision framework: use scouting grades, projected performance, and market value to decide whether a pre-arbitration player is worth locking up early.
 
+## Live App
+[Launch the app](http://127.0.0.1:4968/)
+
 ## Overview
 
 The app has three tabs, each addressing a different front-office question:
